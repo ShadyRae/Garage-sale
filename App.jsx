@@ -1,0 +1,550 @@
+import { useState, useEffect } from "react";
+
+const SUPABASE_URL = "https://jcbmlbuqbhpnixylngzw.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImpjYm1sYnVxYmhwbml4eWxuZ3p3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0MjkwNzQsImV4cCI6MjA5NjAwNTA3NH0.Q5Sdj-a9k1UxENLJhCj8_PNBShMx1AuQSSwFazme8pA";
+
+const db = {
+  async get(table, filters = "") {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?order=created_at.desc${filters}`, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+    return res.json();
+  },
+  async insert(table, data) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify(data)
+    });
+    return res.json();
+  },
+  async update(table, id, data) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: "PATCH",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+      body: JSON.stringify(data)
+    });
+    return res.json();
+  },
+  async delete(table, id) {
+    await fetch(`${SUPABASE_URL}/rest/v1/${table}?id=eq.${id}`, {
+      method: "DELETE",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+  }
+};
+
+const CATEGORIES = ["All", "Clothing", "Kids", "Home & Decor", "Electronics", "Books & Media", "Toys", "Vintage", "Other"];
+const SHIPPING_COST = 15;
+const ADMIN_PASSWORD = "shadyrae";
+const fmt = (n) => `$${Number(n).toFixed(2)}`;
+
+export default function App() {
+  const [items, setItems] = useState([]);
+  const [haggles, setHaggles] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [cart, setCart] = useState([]);
+  const [view, setView] = useState("shop");
+  const [selectedItem, setSelectedItem] = useState(null);
+  const [haggleItem, setHaggleItem] = useState(null);
+  const [activeCategory, setActiveCategory] = useState("All");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [adminMode, setAdminMode] = useState(false);
+  const [checkoutForm, setCheckoutForm] = useState({ name: "", email: "", phone: "", delivery: "pickup", address: "", payment: "etransfer", note: "" });
+  const [orderRef] = useState("GS-" + Math.random().toString(36).substr(2, 6).toUpperCase());
+  const [confirmed, setConfirmed] = useState(false);
+
+  const loadData = async () => {
+    setLoading(true);
+    const [itemsData, hagglesData] = await Promise.all([db.get("items"), db.get("haggles")]);
+    setItems(Array.isArray(itemsData) ? itemsData : []);
+    setHaggles(Array.isArray(hagglesData) ? hagglesData : []);
+    setLoading(false);
+  };
+
+  useEffect(() => { loadData(); }, []);
+
+  const filtered = items.filter(i => {
+    const matchCat = activeCategory === "All" || i.category === activeCategory;
+    const matchSearch = i.title?.toLowerCase().includes(searchQuery.toLowerCase()) || i.description?.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchCat && matchSearch && !i.sold;
+  });
+
+  const cartTotal = cart.reduce((sum, ci) => sum + (ci.hagglePrice ?? ci.price), 0);
+  const shipping = checkoutForm.delivery === "mail" ? SHIPPING_COST : 0;
+  const grandTotal = cartTotal + shipping;
+  const inCart = (id) => cart.find(c => c.id === id);
+  const addToCart = (item) => { if (!inCart(item.id)) setCart(p => [...p, item]); };
+  const removeFromCart = (id) => setCart(p => p.filter(c => c.id !== id));
+
+  const submitOrder = async () => {
+    await db.insert("orders", {
+      order_ref: orderRef, buyer_name: checkoutForm.name, buyer_email: checkoutForm.email,
+      buyer_phone: checkoutForm.phone, delivery: checkoutForm.delivery, address: checkoutForm.address,
+      payment: checkoutForm.payment, note: checkoutForm.note,
+      items: cart.map(i => ({ id: i.id, title: i.title, price: i.hagglePrice ?? i.price })),
+      total: grandTotal
+    });
+    for (const item of cart) await db.update("items", item.id, { sold: true });
+    setCart([]);
+    setConfirmed(true);
+    loadData();
+  };
+
+  if (adminMode) return <AdminPanel items={items} haggles={haggles} db={db} onRefresh={loadData} onExit={() => setAdminMode(false)} />;
+  if (confirmed) return <Confirmation orderRef={orderRef} form={checkoutForm} grandTotal={grandTotal} />;
+  if (view === "checkout") return <Checkout form={checkoutForm} setForm={setCheckoutForm} cart={cart} cartTotal={cartTotal} shipping={shipping} grandTotal={grandTotal} onBack={() => setView("cart")} onSubmit={submitOrder} />;
+  if (view === "cart") return <CartPage cart={cart} removeFromCart={removeFromCart} cartTotal={cartTotal} onBack={() => setView("shop")} onCheckout={() => setView("checkout")} />;
+  if (view === "haggle" && haggleItem) return <HagglePage item={haggleItem} haggles={haggles} db={db} onRefresh={loadData}
+    onBack={() => { setView("item"); }} onAddToCart={(item) => { addToCart(item); setView("shop"); }} />;
+  if (view === "item" && selectedItem) return <ItemDetail item={selectedItem} inCart={!!inCart(selectedItem.id)}
+    onAddToCart={() => addToCart(selectedItem)} onHaggle={() => { setHaggleItem(selectedItem); setView("haggle"); }}
+    onBack={() => setView("shop")} cartCount={cart.length} onCartClick={() => setView("cart")} />;
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#faf7f2", fontFamily: "Georgia, serif" }}>
+      {/* Header */}
+      <div style={{ background: "#2c2c2c", position: "sticky", top: 0, zIndex: 100, boxShadow: "0 2px 12px rgba(0,0,0,0.3)" }}>
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "14px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <div>
+            <div style={{ fontSize: 20, fontWeight: "bold", color: "#f0c060", letterSpacing: 1 }}>🏡 Shady-Rae's</div>
+            <div style={{ fontSize: 10, color: "#aaa", letterSpacing: 3, textTransform: "uppercase" }}>Virtual Garage Sale</div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Search…"
+              style={{ padding: "7px 14px", borderRadius: 20, border: "1px solid #555", background: "#3a3a3a", color: "#fff", fontSize: 13, width: 150, outline: "none" }} />
+            <button onClick={() => setView("cart")}
+              style={{ background: "#f0c060", border: "none", borderRadius: 20, padding: "8px 16px", cursor: "pointer", fontWeight: "bold", fontSize: 13, color: "#2c2c2c", display: "flex", alignItems: "center", gap: 5 }}>
+              🛒 {cart.length > 0 && <span style={{ background: "#e85", color: "#fff", borderRadius: "50%", width: 17, height: 17, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10 }}>{cart.length}</span>}
+            </button>
+            <button onClick={() => { const p = prompt("Admin password:"); if (p === ADMIN_PASSWORD) setAdminMode(true); }}
+              style={{ background: "none", border: "1px solid #555", borderRadius: 20, padding: "7px 12px", cursor: "pointer", color: "#888", fontSize: 12 }}>⚙️</button>
+          </div>
+        </div>
+        <div style={{ borderTop: "1px solid #3a3a3a", display: "flex", overflowX: "auto", padding: "0 16px", maxWidth: 1100, margin: "0 auto" }}>
+          {CATEGORIES.map(cat => (
+            <button key={cat} onClick={() => setActiveCategory(cat)}
+              style={{ background: "none", border: "none", borderBottom: activeCategory === cat ? "2px solid #f0c060" : "2px solid transparent", color: activeCategory === cat ? "#f0c060" : "#999", padding: "9px 14px", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap", fontFamily: "inherit", letterSpacing: 0.5, textTransform: "uppercase" }}>
+              {cat}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Grid */}
+      <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 14px" }}>
+        {loading ? (
+          <div style={{ textAlign: "center", padding: 80, color: "#aaa" }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>⏳</div>Loading items…
+          </div>
+        ) : filtered.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 80, color: "#aaa" }}>
+            <div style={{ fontSize: 48 }}>🏷️</div>
+            <div style={{ marginTop: 12, fontSize: 16 }}>No items found</div>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 18 }}>
+            {filtered.map(item => (
+              <div key={item.id} onClick={() => { setSelectedItem(item); setView("item"); }}
+                style={{ background: "#fff", borderRadius: 12, overflow: "hidden", cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.08)", border: "1px solid #ede8e0", transition: "transform 0.15s, box-shadow 0.15s" }}
+                onMouseEnter={e => { e.currentTarget.style.transform = "translateY(-3px)"; e.currentTarget.style.boxShadow = "0 8px 24px rgba(0,0,0,0.13)"; }}
+                onMouseLeave={e => { e.currentTarget.style.transform = ""; e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)"; }}>
+                <div style={{ position: "relative" }}>
+                  <img src={item.image || "https://placehold.co/400x300?text=No+Image"} alt={item.title}
+                    style={{ width: "100%", height: 190, objectFit: "cover", display: "block" }} />
+                  <div style={{ position: "absolute", top: 7, right: 7, background: "#2c2c2c", color: "#f0c060", fontSize: 10, padding: "3px 8px", borderRadius: 10 }}>{item.condition}</div>
+                  {inCart(item.id) && <div style={{ position: "absolute", top: 7, left: 7, background: "#5a8a5a", color: "#fff", fontSize: 10, padding: "3px 8px", borderRadius: 10 }}>In cart ✓</div>}
+                </div>
+                <div style={{ padding: "12px 14px" }}>
+                  <div style={{ fontSize: 10, color: "#b89a5a", textTransform: "uppercase", letterSpacing: 1, marginBottom: 3 }}>{item.category}</div>
+                  <div style={{ fontSize: 14, fontWeight: "bold", color: "#2c2c2c", marginBottom: 6, lineHeight: 1.3 }}>{item.title}</div>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: 18, fontWeight: "bold", color: "#c0854a" }}>{fmt(item.price)}</div>
+                    <div style={{ fontSize: 10, color: "#bbb" }}>💬 Haggle ok</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ textAlign: "center", marginTop: 40, color: "#ccc", fontSize: 11, letterSpacing: 1 }}>
+          Kelowna, BC · Local pickup or shipped · All prices CAD
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ItemDetail({ item, inCart, onAddToCart, onHaggle, onBack, cartCount, onCartClick }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#faf7f2", fontFamily: "Georgia, serif" }}>
+      <div style={{ background: "#2c2c2c", padding: "13px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", position: "sticky", top: 0, zIndex: 100 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#f0c060", cursor: "pointer", fontSize: 14 }}>← Back</button>
+        <button onClick={onCartClick} style={{ background: "#f0c060", border: "none", borderRadius: 20, padding: "7px 16px", cursor: "pointer", fontWeight: "bold", fontSize: 13, color: "#2c2c2c" }}>
+          🛒{cartCount > 0 ? ` (${cartCount})` : ""}
+        </button>
+      </div>
+      <div style={{ maxWidth: 800, margin: "0 auto", padding: "28px 18px" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 30 }}>
+          <img src={item.image || "https://placehold.co/400x300?text=No+Image"} alt={item.title}
+            style={{ width: "100%", borderRadius: 12, objectFit: "cover", maxHeight: 380 }} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ fontSize: 10, color: "#b89a5a", textTransform: "uppercase", letterSpacing: 1 }}>{item.category}</div>
+            <div style={{ fontSize: 24, fontWeight: "bold", color: "#2c2c2c", lineHeight: 1.2 }}>{item.title}</div>
+            <div style={{ fontSize: 30, fontWeight: "bold", color: "#c0854a" }}>{fmt(item.price)}</div>
+            <div style={{ background: "#f5f0e8", borderRadius: 8, padding: "7px 13px", fontSize: 12, color: "#666", display: "inline-block" }}>Condition: <strong>{item.condition}</strong></div>
+            <div style={{ fontSize: 14, color: "#555", lineHeight: 1.7 }}>{item.description}</div>
+            <div style={{ background: "#fffbe6", border: "1px solid #f0c060", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#887020" }}>
+              📦 Free pickup in Kelowna, BC · Shipping +${SHIPPING_COST} CAD
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {!inCart ? (
+                <button onClick={onAddToCart} style={btnStyle("#2c2c2c", "#f0c060")}>Add to Cart 🛒</button>
+              ) : (
+                <div style={{ background: "#5a8a5a", color: "#fff", borderRadius: 8, padding: "13px", textAlign: "center", fontSize: 14 }}>✓ Already in your cart!</div>
+              )}
+              <button onClick={onHaggle} style={{ background: "#fff", color: "#c0854a", border: "2px solid #c0854a", borderRadius: 8, padding: "12px", fontSize: 14, fontWeight: "bold", cursor: "pointer", fontFamily: "inherit" }}>
+                💬 Make an Offer
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HagglePage({ item, haggles, db, onRefresh, onBack, onAddToCart }) {
+  const [offer, setOffer] = useState("");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [localHaggles, setLocalHaggles] = useState(haggles.filter(h => h.item_id === item.id));
+
+  useEffect(() => {
+    setLocalHaggles(haggles.filter(h => h.item_id === item.id));
+  }, [haggles, item.id]);
+
+  const pending = localHaggles.find(h => h.status === "pending");
+  const accepted = localHaggles.find(h => h.status === "accepted");
+  const rejected = localHaggles.find(h => h.status === "rejected" && !localHaggles.find(h2 => h2.status === "accepted" || h2.status === "pending"));
+
+  const submit = async () => {
+    const o = parseFloat(offer);
+    if (isNaN(o) || o <= 0 || !name || !email) return;
+    setSubmitting(true);
+    await db.insert("haggles", { item_id: item.id, item_title: item.title, asking_price: item.price, offer: o, buyer_name: name, buyer_email: email, status: "pending" });
+    await onRefresh();
+    setSubmitting(false);
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#faf7f2", fontFamily: "Georgia, serif", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 32, maxWidth: 420, width: "100%", boxShadow: "0 4px 24px rgba(0,0,0,0.1)", border: "1px solid #ede8e0" }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#c0854a", cursor: "pointer", fontSize: 13, marginBottom: 18 }}>← Back</button>
+        <div style={{ fontSize: 10, color: "#b89a5a", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>Make an Offer</div>
+        <div style={{ fontSize: 20, fontWeight: "bold", marginBottom: 4, color: "#2c2c2c" }}>{item.title}</div>
+        <div style={{ fontSize: 15, color: "#888", marginBottom: 22 }}>Asking: <strong style={{ color: "#c0854a" }}>{fmt(item.price)}</strong></div>
+
+        {!pending && !accepted && (
+          <>
+            <Field label="Your name *"><input value={name} onChange={e => setName(e.target.value)} placeholder="Full name" style={inputStyle} /></Field>
+            <Field label="Your email *"><input value={email} onChange={e => setEmail(e.target.value)} placeholder="you@email.com" type="email" style={inputStyle} /></Field>
+            <Field label="Your offer (CAD) *">
+              <div style={{ position: "relative" }}>
+                <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", color: "#888" }}>$</span>
+                <input type="number" value={offer} onChange={e => setOffer(e.target.value)} placeholder="0.00"
+                  style={{ ...inputStyle, paddingLeft: 28 }} />
+              </div>
+            </Field>
+            <div style={{ fontSize: 11, color: "#aaa", marginBottom: 16 }}>Your offer will be reviewed. Refresh to check the response!</div>
+            <button onClick={submit} disabled={!offer || !name || !email || submitting}
+              style={btnStyle(offer && name && email ? "#c0854a" : "#ddd", offer && name && email ? "#fff" : "#aaa")}>
+              {submitting ? "Sending…" : "Send Offer 💬"}
+            </button>
+          </>
+        )}
+
+        {pending && !accepted && (
+          <div style={{ background: "#fffbe6", border: "1px solid #f0c060", borderRadius: 10, padding: 20, textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>⏳</div>
+            <div style={{ fontWeight: "bold", color: "#887020" }}>Offer sent: {fmt(pending.offer)}</div>
+            <div style={{ fontSize: 13, color: "#aaa", marginTop: 6 }}>Waiting on the seller… refresh to check!</div>
+          </div>
+        )}
+
+        {accepted && (
+          <div style={{ background: "#edfaf0", border: "1px solid #5a8a5a", borderRadius: 10, padding: 20, textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>🎉</div>
+            <div style={{ fontWeight: "bold", color: "#3a6a3a", fontSize: 16 }}>Offer accepted!</div>
+            <div style={{ fontSize: 14, color: "#555", margin: "8px 0" }}>New price: <strong style={{ color: "#3a6a3a" }}>{fmt(accepted.offer)}</strong></div>
+            <button onClick={() => onAddToCart({ ...item, hagglePrice: accepted.offer })}
+              style={{ ...btnStyle("#3a6a3a", "#fff"), marginTop: 10 }}>Add to Cart at New Price</button>
+          </div>
+        )}
+
+        {rejected && (
+          <div style={{ background: "#fef2f2", border: "1px solid #e88", borderRadius: 10, padding: 20, textAlign: "center" }}>
+            <div style={{ fontSize: 32, marginBottom: 8 }}>😔</div>
+            <div style={{ fontWeight: "bold", color: "#a03030" }}>Offer not accepted</div>
+            <div style={{ fontSize: 13, color: "#888", margin: "8px 0" }}>The seller passed on {fmt(rejected.offer)}. You can still buy at {fmt(item.price)}.</div>
+            <button onClick={onBack} style={{ ...btnStyle("#2c2c2c", "#f0c060"), marginTop: 10 }}>Go Back</button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CartPage({ cart, removeFromCart, cartTotal, onBack, onCheckout }) {
+  return (
+    <div style={{ minHeight: "100vh", background: "#faf7f2", fontFamily: "Georgia, serif" }}>
+      <div style={{ background: "#2c2c2c", padding: "13px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#f0c060", cursor: "pointer", fontSize: 14 }}>← Keep shopping</button>
+        <div style={{ color: "#fff", fontWeight: "bold" }}>Your Cart</div>
+      </div>
+      <div style={{ maxWidth: 660, margin: "0 auto", padding: "24px 16px" }}>
+        {cart.length === 0 ? (
+          <div style={{ textAlign: "center", padding: 60, color: "#aaa" }}>
+            <div style={{ fontSize: 48 }}>🛒</div>
+            <div style={{ marginTop: 12, fontSize: 16 }}>Your cart is empty</div>
+            <button onClick={onBack} style={{ marginTop: 20, ...btnStyle("#2c2c2c", "#f0c060") }}>Browse Items</button>
+          </div>
+        ) : (
+          <>
+            {cart.map(item => (
+              <div key={item.id} style={{ background: "#fff", borderRadius: 12, padding: 14, marginBottom: 10, display: "flex", gap: 14, alignItems: "center", boxShadow: "0 1px 6px rgba(0,0,0,0.07)", border: "1px solid #ede8e0" }}>
+                <img src={item.image || "https://placehold.co/80"} alt={item.title} style={{ width: 68, height: 68, objectFit: "cover", borderRadius: 8 }} />
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontWeight: "bold", color: "#2c2c2c", fontSize: 14 }}>{item.title}</div>
+                  <div style={{ fontSize: 11, color: "#999" }}>{item.condition}</div>
+                  {item.hagglePrice != null && <div style={{ fontSize: 11, color: "#5a8a5a" }}>✓ Haggle price applied</div>}
+                </div>
+                <div style={{ fontSize: 18, fontWeight: "bold", color: "#c0854a" }}>{fmt(item.hagglePrice ?? item.price)}</div>
+                <button onClick={() => removeFromCart(item.id)} style={{ background: "none", border: "none", color: "#ccc", cursor: "pointer", fontSize: 18 }}>✕</button>
+              </div>
+            ))}
+            <div style={{ background: "#fff", borderRadius: 12, padding: 18, marginTop: 14, border: "1px solid #ede8e0" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 14, color: "#555", marginBottom: 4 }}><span>Subtotal</span><span>{fmt(cartTotal)}</span></div>
+              <div style={{ fontSize: 11, color: "#aaa", marginBottom: 14 }}>+ Shipping calculated at checkout</div>
+              <button onClick={onCheckout} style={btnStyle("#2c2c2c", "#f0c060")}>Proceed to Checkout →</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Checkout({ form, setForm, cart, cartTotal, shipping, grandTotal, onBack, onSubmit }) {
+  const [submitting, setSubmitting] = useState(false);
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
+  const valid = form.name && form.email && (form.delivery !== "mail" || form.address);
+  const handleSubmit = async () => { setSubmitting(true); await onSubmit(); setSubmitting(false); };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#faf7f2", fontFamily: "Georgia, serif" }}>
+      <div style={{ background: "#2c2c2c", padding: "13px 18px", display: "flex", alignItems: "center", gap: 14 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", color: "#f0c060", cursor: "pointer", fontSize: 14 }}>← Back to cart</button>
+        <div style={{ color: "#fff", fontWeight: "bold" }}>Checkout</div>
+      </div>
+      <div style={{ maxWidth: 560, margin: "0 auto", padding: "24px 16px" }}>
+        <Section title="Your Info">
+          <Field label="Name *"><input value={form.name} onChange={e => set("name", e.target.value)} placeholder="Full name" style={inputStyle} /></Field>
+          <Field label="Email *"><input value={form.email} onChange={e => set("email", e.target.value)} placeholder="you@email.com" type="email" style={inputStyle} /></Field>
+          <Field label="Phone"><input value={form.phone} onChange={e => set("phone", e.target.value)} placeholder="(optional)" style={inputStyle} /></Field>
+        </Section>
+        <Section title="Delivery">
+          {[["pickup", "🏡 Local Pickup — Kelowna, BC"], ["mail", `📦 Ship to me (+$${SHIPPING_COST} CAD)`]].map(([val, label]) => (
+            <label key={val} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: form.delivery === val ? "#fdf4e3" : "#fff", border: `2px solid ${form.delivery === val ? "#f0c060" : "#ede8e0"}`, borderRadius: 8, cursor: "pointer", marginBottom: 8 }}>
+              <input type="radio" name="delivery" value={val} checked={form.delivery === val} onChange={() => set("delivery", val)} style={{ accentColor: "#c0854a" }} />
+              <span style={{ fontWeight: "bold", fontSize: 14 }}>{label}</span>
+            </label>
+          ))}
+          {form.delivery === "mail" && <Field label="Shipping address *"><input value={form.address} onChange={e => set("address", e.target.value)} placeholder="Street, City, Province, Postal Code" style={inputStyle} /></Field>}
+        </Section>
+        <Section title="Payment">
+          {[["etransfer", "💸 E-Transfer"], ["paypal", "🅿️ PayPal"], ["cash", "💵 Cash (pickup only)"]].map(([val, label]) => (
+            <label key={val} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", background: form.payment === val ? "#fdf4e3" : "#fff", border: `2px solid ${form.payment === val ? "#f0c060" : "#ede8e0"}`, borderRadius: 8, cursor: "pointer", marginBottom: 8 }}>
+              <input type="radio" name="payment" value={val} checked={form.payment === val} onChange={() => set("payment", val)} style={{ accentColor: "#c0854a" }} />
+              <span style={{ fontWeight: "bold", fontSize: 14 }}>{label}</span>
+            </label>
+          ))}
+        </Section>
+        <Section title="Notes">
+          <textarea value={form.note} onChange={e => set("note", e.target.value)} placeholder="Anything for the seller? (optional)" rows={3}
+            style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
+        </Section>
+        <div style={{ background: "#fff", borderRadius: 12, padding: 18, border: "1px solid #ede8e0", marginBottom: 18 }}>
+          <div style={{ fontWeight: "bold", marginBottom: 10, fontSize: 13, color: "#2c2c2c" }}>Order Summary</div>
+          {cart.map(i => <div key={i.id} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#555", marginBottom: 3 }}><span>{i.title}</span><span>{fmt(i.hagglePrice ?? i.price)}</span></div>)}
+          <div style={{ borderTop: "1px solid #ede8e0", marginTop: 10, paddingTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#555", marginBottom: 3 }}><span>Subtotal</span><span>{fmt(cartTotal)}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, color: "#555", marginBottom: 3 }}><span>Shipping</span><span>{shipping > 0 ? fmt(shipping) : "Free"}</span></div>
+            <div style={{ display: "flex", justifyContent: "space-between", fontWeight: "bold", fontSize: 16, color: "#c0854a", marginTop: 8 }}><span>Total</span><span>{fmt(grandTotal)}</span></div>
+          </div>
+        </div>
+        <button onClick={handleSubmit} disabled={!valid || submitting}
+          style={btnStyle(valid ? "#2c2c2c" : "#ccc", valid ? "#f0c060" : "#888")}>
+          {submitting ? "Placing order…" : `Place Order — ${fmt(grandTotal)}`}
+        </button>
+        <div style={{ fontSize: 11, color: "#aaa", textAlign: "center", marginTop: 10 }}>No account needed. Payment instructions sent by email.</div>
+      </div>
+    </div>
+  );
+}
+
+function Confirmation({ orderRef, form, grandTotal }) {
+  const pay = { etransfer: "Send your E-Transfer to moonkittykreations@gmail.com with your order number as the message.", paypal: "Send PayPal to @shadyrae with your order number in the note.", cash: "Pay cash at pickup — we'll confirm a time by email." };
+  return (
+    <div style={{ minHeight: "100vh", background: "#faf7f2", fontFamily: "Georgia, serif", display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: "#fff", borderRadius: 16, padding: 36, maxWidth: 460, width: "100%", textAlign: "center", boxShadow: "0 4px 24px rgba(0,0,0,0.1)" }}>
+        <div style={{ fontSize: 56, marginBottom: 10 }}>🎉</div>
+        <div style={{ fontSize: 22, fontWeight: "bold", color: "#2c2c2c", marginBottom: 6 }}>Order placed!</div>
+        <div style={{ fontSize: 13, color: "#aaa", marginBottom: 20 }}>Order #{orderRef}</div>
+        <div style={{ background: "#fffbe6", border: "1px solid #f0c060", borderRadius: 10, padding: 18, marginBottom: 18, textAlign: "left" }}>
+          <div style={{ fontWeight: "bold", marginBottom: 6, color: "#887020", fontSize: 12, textTransform: "uppercase", letterSpacing: 1 }}>💰 How to Pay</div>
+          <div style={{ fontSize: 14, color: "#555", lineHeight: 1.6 }}>{pay[form.payment]}</div>
+        </div>
+        <div style={{ fontSize: 13, color: "#777" }}>Thanks {form.name}! Items held 48hrs after payment. Confirmation sent to <strong>{form.email}</strong>.</div>
+      </div>
+    </div>
+  );
+}
+
+function AdminPanel({ items, haggles, db, onRefresh, onExit }) {
+  const [tab, setTab] = useState("items");
+  const [newItem, setNewItem] = useState({ title: "", category: "Other", price: "", condition: "Good", description: "", image: "" });
+  const [saving, setSaving] = useState(false);
+  const pending = haggles.filter(h => h.status === "pending");
+
+  const addItem = async () => {
+    if (!newItem.title || !newItem.price) return;
+    setSaving(true);
+    await db.insert("items", { ...newItem, price: parseFloat(newItem.price), sold: false });
+    setNewItem({ title: "", category: "Other", price: "", condition: "Good", description: "", image: "" });
+    await onRefresh();
+    setSaving(false);
+  };
+
+  const respondHaggle = async (h, accept) => {
+    await db.update("haggles", h.id, { status: accept ? "accepted" : "rejected" });
+    if (accept) await db.update("items", h.item_id, { price: h.offer });
+    await onRefresh();
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", background: "#1a1a1a", fontFamily: "Georgia, serif", color: "#fff" }}>
+      <div style={{ background: "#111", padding: "13px 18px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ color: "#f0c060", fontWeight: "bold", fontSize: 15 }}>⚙️ Admin Panel</div>
+        <button onClick={onExit} style={{ background: "none", border: "1px solid #555", borderRadius: 20, padding: "6px 14px", color: "#aaa", cursor: "pointer", fontSize: 12 }}>← Back to Shop</button>
+      </div>
+      <div style={{ display: "flex", borderBottom: "1px solid #333", padding: "0 18px" }}>
+        {[["items", "📦 Items"], ["haggles", `💬 Offers${pending.length ? ` (${pending.length})` : ""}`], ["add", "➕ Add Item"]].map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)} style={{ background: "none", border: "none", borderBottom: tab === key ? "2px solid #f0c060" : "2px solid transparent", color: tab === key ? "#f0c060" : "#888", padding: "11px 14px", cursor: "pointer", fontSize: 12, fontFamily: "inherit" }}>{label}</button>
+        ))}
+      </div>
+      <div style={{ maxWidth: 900, margin: "0 auto", padding: 20 }}>
+        {tab === "items" && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 14 }}>
+            {items.map(item => (
+              <div key={item.id} style={{ background: "#2c2c2c", borderRadius: 10, overflow: "hidden", border: "1px solid #3a3a3a", opacity: item.sold ? 0.55 : 1 }}>
+                <img src={item.image || "https://placehold.co/200x140"} alt={item.title} style={{ width: "100%", height: 130, objectFit: "cover" }} />
+                <div style={{ padding: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: "bold", color: "#fff", marginBottom: 3 }}>{item.title}</div>
+                  <div style={{ fontSize: 15, color: "#f0c060", marginBottom: 8 }}>{fmt(item.price)}{item.sold && " · SOLD"}</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button onClick={async () => { await db.update("items", item.id, { sold: !item.sold }); onRefresh(); }}
+                      style={{ flex: 1, background: item.sold ? "#3a5a3a" : "#5a3a3a", border: "none", borderRadius: 6, padding: "7px", color: "#fff", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>
+                      {item.sold ? "Unmark Sold" : "Mark Sold"}
+                    </button>
+                    <button onClick={async () => { await db.delete("items", item.id); onRefresh(); }}
+                      style={{ background: "#3a2020", border: "none", borderRadius: 6, padding: "7px 10px", color: "#e88", cursor: "pointer", fontSize: 11 }}>✕</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tab === "haggles" && (
+          <div>
+            {haggles.length === 0 ? <div style={{ color: "#888", textAlign: "center", padding: 40 }}>No offers yet</div> :
+              haggles.map(h => (
+                <div key={h.id} style={{ background: "#2c2c2c", borderRadius: 10, padding: 18, marginBottom: 10, border: `1px solid ${h.status === "pending" ? "#f0c060" : h.status === "accepted" ? "#5a8a5a" : "#444"}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
+                    <div>
+                      <div style={{ fontWeight: "bold", marginBottom: 3 }}>{h.item_title}</div>
+                      <div style={{ fontSize: 13, color: "#aaa" }}>Asking {fmt(h.asking_price)} · Offer: <strong style={{ color: "#f0c060" }}>{fmt(h.offer)}</strong></div>
+                      <div style={{ fontSize: 11, color: "#888", marginTop: 3 }}>{h.buyer_name} · {h.buyer_email}</div>
+                    </div>
+                    {h.status === "pending" ? (
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button onClick={() => respondHaggle(h, true)} style={{ background: "#3a6a3a", border: "none", borderRadius: 6, padding: "8px 14px", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>✓ Accept</button>
+                        <button onClick={() => respondHaggle(h, false)} style={{ background: "#6a3a3a", border: "none", borderRadius: 6, padding: "8px 14px", color: "#fff", cursor: "pointer", fontFamily: "inherit" }}>✕ Decline</button>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12, padding: "4px 10px", borderRadius: 20, background: h.status === "accepted" ? "#3a6a3a" : "#4a2020", color: "#fff" }}>{h.status}</div>
+                    )}
+                  </div>
+                </div>
+              ))
+            }
+          </div>
+        )}
+
+        {tab === "add" && (
+          <div style={{ maxWidth: 460 }}>
+            {[["Title *", "title", "text"], ["Price (CAD) *", "price", "number"], ["Image URL", "image", "text"]].map(([label, key, type]) => (
+              <Field key={key} label={label} dark>
+                <input type={type} value={newItem[key]} onChange={e => setNewItem(n => ({ ...n, [key]: e.target.value }))}
+                  style={{ ...inputStyle, background: "#3a3a3a", border: "1px solid #555", color: "#fff" }} />
+              </Field>
+            ))}
+            <Field label="Category" dark>
+              <select value={newItem.category} onChange={e => setNewItem(n => ({ ...n, category: e.target.value }))}
+                style={{ ...inputStyle, background: "#3a3a3a", border: "1px solid #555", color: "#fff" }}>
+                {CATEGORIES.filter(c => c !== "All").map(c => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Condition" dark>
+              <select value={newItem.condition} onChange={e => setNewItem(n => ({ ...n, condition: e.target.value }))}
+                style={{ ...inputStyle, background: "#3a3a3a", border: "1px solid #555", color: "#fff" }}>
+                {["Like New", "Very Good", "Good", "Fair", "Parts Only"].map(c => <option key={c}>{c}</option>)}
+              </select>
+            </Field>
+            <Field label="Description" dark>
+              <textarea value={newItem.description} onChange={e => setNewItem(n => ({ ...n, description: e.target.value }))} rows={3}
+                style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit", background: "#3a3a3a", border: "1px solid #555", color: "#fff" }} />
+            </Field>
+            <button onClick={addItem} disabled={!newItem.title || !newItem.price || saving}
+              style={btnStyle(newItem.title && newItem.price ? "#f0c060" : "#555", "#2c2c2c")}>
+              {saving ? "Adding…" : "➕ Add Item to Shop"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const inputStyle = { width: "100%", padding: "11px 13px", border: "2px solid #ede8e0", borderRadius: 8, fontSize: 14, fontFamily: "inherit", outline: "none", boxSizing: "border-box", background: "#fff" };
+const btnStyle = (bg, color) => ({ width: "100%", background: bg, color, border: "none", borderRadius: 8, padding: "14px", fontSize: 15, fontWeight: "bold", cursor: "pointer", fontFamily: "inherit", letterSpacing: 0.3 });
+
+function Section({ title, children }) {
+  return (
+    <div style={{ background: "#fff", borderRadius: 12, padding: 18, marginBottom: 14, border: "1px solid #ede8e0" }}>
+      <div style={{ fontSize: 11, fontWeight: "bold", textTransform: "uppercase", letterSpacing: 1.5, color: "#b89a5a", marginBottom: 12 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, children, dark }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ display: "block", fontSize: 12, color: dark ? "#aaa" : "#888", marginBottom: 5 }}>{label}</label>
+      {children}
+    </div>
+  );
+}
